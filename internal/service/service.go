@@ -731,7 +731,8 @@ func (a *App) executeAction(ctx context.Context, action domain.Action, event dom
 		payload := map[string]any{"event": event}
 		return a.config.Jobs.Enqueue(ctx, jobs.Job{Type: action.Value, Payload: payload, MaxRetry: 1})
 	case "tag-contact":
-		contact, err := a.config.Repository.GetContact(ctx, domain.RequiredEventContactID(event))
+		contactID := domain.RequiredEventContactID(event)
+		contact, err := a.config.Repository.GetContact(ctx, contactID)
 		if err != nil {
 			return err
 		}
