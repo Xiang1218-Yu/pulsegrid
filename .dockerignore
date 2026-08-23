@@ -1,0 +1,8 @@
+.git
+.DS_Store
+.claude
+.source_snapshot
+.base_snapshot
+BUG_REPRO.md
+trajectory*.jsonl
+*.log
