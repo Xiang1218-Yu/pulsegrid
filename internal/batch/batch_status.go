@@ -1,9 +1,5 @@
 package batch
 
-func recordResult(results *[]Result, value Result) {
-	*results = append(*results, value)
-}
-
 func SuccessRate(value Report) float64 {
 	if value.Summary.Total == 0 {
 		return 0

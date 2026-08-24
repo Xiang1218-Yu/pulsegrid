@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -73,23 +72,28 @@ func (p *Processor) Run(ctx context.Context, items []Item) Report {
 		report.Summary = summarize(report.Results, time.Since(started))
 		return report
 	}
+	// runCtx lets a worker cancel the whole run when Continue is disabled and a
+	// task fails. Without it the dispatch loop would block forever sending into
+	// an unbuffered channel once the workers have stopped draining it.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	tasks := make(chan indexedItem)
 	var group sync.WaitGroup
-	var succeeded atomic.Int64
-	var failed atomic.Int64
 	for worker := 0; worker < p.config.Workers; worker++ {
 		group.Add(1)
 		go func() {
 			defer group.Done()
 			for task := range tasks {
-				result := p.process(ctx, task.item)
-				recordResult(&report.Results, result)
-				if result.Success {
-					succeeded.Add(1)
-				} else {
-					failed.Add(1)
-				}
+				result := p.process(runCtx, task.item)
+				// Each task carries its own index, so concurrent workers write
+				// to disjoint elements of the pre-sized results slice. The
+				// slice is never grown or reassigned, so its header stays
+				// immutable and these per-index writes are race-free — no
+				// appends, hence no lost or duplicated records.
+				report.Results[task.index] = result
 				if !result.Success && !p.config.Continue {
+					cancel()
 					return
 				}
 			}
@@ -97,16 +101,17 @@ func (p *Processor) Run(ctx context.Context, items []Item) Report {
 	}
 	for index, item := range items {
 		select {
-		case <-ctx.Done():
-			report.Results[index] = failure(item, 0, ctx.Err())
+		case <-runCtx.Done():
+			report.Results[index] = failure(item, 0, runCtx.Err())
 		case tasks <- indexedItem{index: index, item: item}:
 		}
 	}
 	close(tasks)
 	group.Wait()
+	// The summary is derived from the same results slice that callers inspect
+	// (and that FilterFailed/RetryReport read), so the success counts always
+	// agree with the actual records instead of drifting from a side counter.
 	report.Summary = summarize(report.Results, time.Since(started))
-	report.Summary.Succeeded = int(succeeded.Load())
-	report.Summary.Failed = int(failed.Load())
 	return report
 }
 
