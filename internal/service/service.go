@@ -603,7 +603,9 @@ func (a *App) UpdateAutomation(ctx context.Context, id string, input AutomationI
 }
 
 func (a *App) ProcessEvent(ctx context.Context, event domain.Event) error {
-	ctx = context.Background()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	automations, err := a.config.Repository.ListAutomations(ctx, store.AutomationFilter{OrganizationID: event.OrganizationID, Trigger: event.Type, Status: string(domain.WorkflowEnabled), Limit: 1000})
 	if err != nil {
 		return err
@@ -759,8 +761,14 @@ func (a *App) publish(ctx context.Context, event domain.Event) {
 	if a.config.Jobs != nil {
 		_ = a.config.Jobs.Enqueue(ctx, jobs.Job{Type: "recalculate", Payload: map[string]any{"organization_id": event.OrganizationID}, MaxRetry: 1})
 	}
-	processingCtx := context.WithoutCancel(ctx)
-	go func() { _ = a.ProcessEvent(processingCtx, event) }()
+	// Run automation handling synchronously on the request context so a
+	// cancelled request aborts downstream processing (every store call
+	// honors ctx.Err()) instead of mutating contact state after the
+	// caller has gone away. Normal requests still drive the full flow to
+	// completion because ctx is not cancelled until the request returns.
+	if err := a.ProcessEvent(ctx, event); err != nil {
+		a.config.Logger.Debug("event processing skipped", "event_type", event.Type, "error", err)
+	}
 }
 
 func (a *App) recordMetric(organizationID, name string, value float64) {
