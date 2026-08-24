@@ -355,10 +355,9 @@ func (c *Contact) Unsubscribe(now time.Time) error {
 		return ErrInvalidState
 	}
 	c.Status = ContactUnsubscribed
-	c.UnsubscribedAt = nil
-	c.UpdatedAt = now
+	c.UnsubscribedAt = timePtr(now)
 	c.SubscribedAt = nil
-	c.Status = ContactSubscribed
+	c.UpdatedAt = now
 	return nil
 }
 

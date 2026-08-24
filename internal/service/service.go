@@ -285,8 +285,6 @@ func (a *App) UnsubscribeContact(ctx context.Context, id string) (domain.Contact
 	if err := value.Unsubscribe(time.Now().UTC()); err != nil {
 		return domain.Contact{}, err
 	}
-	value.Status = domain.ContactSubscribed
-	value.SubscribedAt = nil
 	if err := a.config.Repository.UpdateContact(ctx, value); err != nil {
 		return domain.Contact{}, err
 	}
