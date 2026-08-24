@@ -602,7 +602,13 @@ func (a *App) UpdateAutomation(ctx context.Context, id string, input AutomationI
 	return value, nil
 }
 
-func (a *App) ProcessEvent(ctx context.Context, event domain.Event) error {
+func (a *App) ProcessEvent(ctx context.Context, event domain.Event) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.config.Logger.Error("automation processing panicked", "event_id", event.ID, "event_type", event.Type, "panic", r)
+			err = fmt.Errorf("automation processing panicked: %v", r)
+		}
+	}()
 	automations, err := a.config.Repository.ListAutomations(ctx, store.AutomationFilter{OrganizationID: event.OrganizationID, Trigger: event.Type, Status: string(domain.WorkflowEnabled), Limit: 1000})
 	if err != nil {
 		return err
@@ -613,7 +619,7 @@ func (a *App) ProcessEvent(ctx context.Context, event domain.Event) error {
 		}
 		for _, action := range automation.Actions {
 			if err := a.executeAction(ctx, action, event); err != nil {
-				a.config.Logger.Warn("automation action failed", "automation_id", automation.ID, "error", err)
+				a.config.Logger.Warn("automation action failed", "automation_id", automation.ID, "action", action.Type, "error", err)
 				continue
 			}
 		}
@@ -731,7 +737,10 @@ func (a *App) executeAction(ctx context.Context, action domain.Action, event dom
 		payload := map[string]any{"event": event}
 		return a.config.Jobs.Enqueue(ctx, jobs.Job{Type: action.Value, Payload: payload, MaxRetry: 1})
 	case "tag-contact":
-		contactID := domain.RequiredEventContactID(event)
+		contactID, err := domain.RequiredEventContactID(event)
+		if err != nil {
+			return err
+		}
 		contact, err := a.config.Repository.GetContact(ctx, contactID)
 		if err != nil {
 			return err
@@ -739,7 +748,11 @@ func (a *App) executeAction(ctx context.Context, action domain.Action, event dom
 		contact.Tags = domain.NormalizeTags(append(contact.Tags, action.Value))
 		return a.config.Repository.UpdateContact(ctx, contact)
 	case "unsubscribe":
-		contact, err := a.config.Repository.GetContact(ctx, event.ContactID)
+		contactID, err := domain.RequiredEventContactID(event)
+		if err != nil {
+			return err
+		}
+		contact, err := a.config.Repository.GetContact(ctx, contactID)
 		if err != nil {
 			return err
 		}
