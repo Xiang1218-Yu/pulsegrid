@@ -132,12 +132,25 @@ func (b *Bus) remove(id uint64) {
 	}
 	close(sub.done)
 	b.mu.Unlock()
+	// Close the channel under sendMu so it cannot race with a concurrent send.
+	// A publisher that already copied this subscription into its recipient list
+	// is either blocked in send waiting for sendMu or has already returned; in
+	// both cases send observes the closed `done` channel and returns without
+	// touching `channel`, so closing it here is safe and no send is ever made on
+	// a closed channel.
+	sub.sendMu.Lock()
 	close(sub.channel)
+	sub.sendMu.Unlock()
 }
 
 func (s *subscription) send(ctx context.Context, event domain.Event, drop bool) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
+	// Re-check done while holding sendMu. remove() closes `done` first, then
+	// closes `channel` under sendMu; because we hold sendMu here, either done
+	// is not yet closed (and channel is still open) or it is already closed
+	// (and channel may already be closed too). Checking done first guarantees
+	// we never send on a closed channel.
 	select {
 	case <-s.done:
 		return nil
@@ -154,6 +167,8 @@ func (s *subscription) send(ctx context.Context, event domain.Event, drop bool) 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.done:
+		return nil
 	case s.channel <- event:
 		return nil
 	}
