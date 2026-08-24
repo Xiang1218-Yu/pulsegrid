@@ -31,6 +31,7 @@ type subscription struct {
 	bus     *Bus
 	topics  map[string]bool
 	channel chan domain.Event
+	done    chan struct{}
 	once    sync.Once
 }
 
@@ -55,7 +56,7 @@ func (b *Bus) Subscribe(topics ...string) *Subscription {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	id := b.next.Add(1)
-	value := &subscription{id: id, bus: b, topics: map[string]bool{}, channel: make(chan domain.Event, b.config.Buffer)}
+	value := &subscription{id: id, bus: b, topics: map[string]bool{}, channel: make(chan domain.Event, b.config.Buffer), done: make(chan struct{})}
 	if len(topics) == 0 {
 		topics = []string{"*"}
 	}
@@ -74,6 +75,11 @@ func (b *Bus) Subscribe(topics ...string) *Subscription {
 }
 
 func (s *Subscription) Events() <-chan domain.Event { return s.value.channel }
+
+// Done is closed when the subscription is removed (Close) or the bus is
+// closed. Consumers that also select on Done can stop without relying on the
+// event channel being closed, which would race concurrent publishers.
+func (s *Subscription) Done() <-chan struct{} { return s.value.done }
 
 func (s *Subscription) Close() { s.value.once.Do(func() { s.value.bus.remove(s.value.id) }) }
 
@@ -95,6 +101,7 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 		if drop {
 			select {
 			case recipient.channel <- event:
+			case <-recipient.done:
 			default:
 			}
 			continue
@@ -102,6 +109,7 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-recipient.done:
 		case recipient.channel <- event:
 		}
 	}
@@ -116,7 +124,9 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	for _, sub := range b.subs {
-		close(sub.channel)
+		// Close done so consumers drain and Publish short-circuits; the event
+		// channel stays open to avoid racing concurrent sends in Publish.
+		close(sub.done)
 	}
 	b.subs = map[uint64]*subscription{}
 	b.topics = map[string]map[uint64]bool{}
@@ -133,7 +143,11 @@ func (b *Bus) remove(id uint64) {
 	for topic := range sub.topics {
 		delete(b.topics[topic], id)
 	}
-	close(sub.channel)
+	// Signal termination via done. The event channel is intentionally left
+	// open: closing it here would race concurrent sends in Publish. Consumers
+	// select on Done(); leftover buffered events are reclaimed when the
+	// subscription is garbage-collected.
+	close(sub.done)
 }
 
 func (b *Bus) recipientsLocked(topic string) []*subscription {

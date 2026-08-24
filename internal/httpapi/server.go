@@ -144,11 +144,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subscription := s.config.Events.Subscribe(r.URL.Query().Get("topic"))
-	defer func() {
-		if !events.ContextEnded(r.Context()) {
-			subscription.Close()
-		}
-	}()
+	defer subscription.Close()
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -156,6 +152,8 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-subscription.Done():
 			return
 		case event, ok := <-subscription.Events():
 			if !ok {
