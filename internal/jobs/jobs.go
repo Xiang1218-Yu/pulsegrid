@@ -148,9 +148,7 @@ func (q *Queue) execute(worker string, job Job) {
 	}
 	for attempt := 0; attempt <= maxRetry; attempt++ {
 		job.Attempt = AttemptNumber(Job{Attempt: attempt + 1})
-		ctx, cancel := context.WithTimeout(context.Background(), q.config.AttemptTimeout)
-		defer cancel()
-		err := handler(ctx, job)
+		err := q.runAttempt(handler, job)
 		if err == nil {
 			q.finished.Add(1)
 			q.config.Logger.Debug("job finished", "job_id", job.ID, "worker", worker)
@@ -163,6 +161,17 @@ func (q *Queue) execute(worker string, job Job) {
 		}
 		time.Sleep(time.Duration(5*(1<<min(attempt, 5))) * time.Millisecond)
 	}
+}
+
+// runAttempt runs a single execution of the job with its own scoped context.
+// Canceling the context here — rather than deferring to the end of execute —
+// guarantees the previous attempt's context (and its timeout timer) is
+// released before a retry begins, so failed retries do not accumulate context
+// resources while the worker sleeps or reattempts.
+func (q *Queue) runAttempt(handler Handler, job Job) error {
+	ctx, cancel := context.WithTimeout(context.Background(), q.config.AttemptTimeout)
+	defer cancel()
+	return handler(ctx, job)
 }
 
 func (q *Queue) handler(kind string) (Handler, bool) {
