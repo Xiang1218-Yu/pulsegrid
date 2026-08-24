@@ -761,7 +761,14 @@ func (a *App) publish(ctx context.Context, event domain.Event) {
 			a.config.Logger.Warn("recalculate job was not accepted", "error", err)
 		}
 	}
-	go func() { _ = a.ProcessEvent(context.Background(), event) }()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.config.Logger.Error("event processing panicked", "event_type", event.Type, "organization_id", event.OrganizationID, "panic", r)
+			}
+		}()
+		_ = a.ProcessEvent(context.Background(), event)
+	}()
 }
 
 func (a *App) recordMetric(organizationID, name string, value float64) {

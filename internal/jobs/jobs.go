@@ -42,6 +42,7 @@ type Queue struct {
 	accepted atomic.Int64
 	finished atomic.Int64
 	failed   atomic.Int64
+	panicked atomic.Int64
 }
 
 type Stats struct {
@@ -50,6 +51,7 @@ type Stats struct {
 	Accepted int64 `json:"accepted"`
 	Finished int64 `json:"finished"`
 	Failed   int64 `json:"failed"`
+	Panicked int64 `json:"panicked"`
 }
 
 func New(config Config) *Queue {
@@ -120,7 +122,7 @@ func (q *Queue) Enqueue(ctx context.Context, job Job) error {
 }
 
 func (q *Queue) Stats() Stats {
-	return Stats{Depth: len(q.items), Workers: q.config.Workers, Accepted: q.accepted.Load(), Finished: q.finished.Load(), Failed: q.failed.Load()}
+	return Stats{Depth: len(q.items), Workers: q.config.Workers, Accepted: q.accepted.Load(), Finished: q.finished.Load(), Failed: q.failed.Load(), Panicked: q.panicked.Load()}
 }
 
 func (q *Queue) worker(index int) {
@@ -137,6 +139,13 @@ func (q *Queue) worker(index int) {
 }
 
 func (q *Queue) execute(worker string, job Job) {
+	defer func() {
+		if r := recover(); r != nil {
+			q.panicked.Add(1)
+			q.failed.Add(1)
+			q.config.Logger.Error("job panicked", "job_id", job.ID, "type", job.Type, "worker", worker, "panic", r)
+		}
+	}()
 	handler, ok := q.handler(job.Type)
 	if !ok {
 		q.failed.Add(1)
@@ -162,7 +171,28 @@ func (q *Queue) execute(worker string, job Job) {
 			q.config.Logger.Error("job failed", "job_id", job.ID, "error", err)
 			return
 		}
-		time.Sleep(time.Duration(5*(1<<min(attempt, 5))) * time.Millisecond)
+		if !q.backoff(attempt) {
+			// Queue is shutting down: stop retrying and count the job as
+			// failed so stats stay accurate rather than silently dropping it.
+			q.failed.Add(1)
+			q.config.Logger.Warn("job retry interrupted by shutdown", "job_id", job.ID, "attempt", job.Attempt)
+			return
+		}
+	}
+}
+
+// backoff waits for the configured retry delay while remaining responsive to
+// shutdown. It returns false if the queue is stopping and the caller should
+// give up retrying.
+func (q *Queue) backoff(attempt int) bool {
+	delay := time.Duration(5*(1<<min(attempt, 5))) * time.Millisecond
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-q.stop:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
