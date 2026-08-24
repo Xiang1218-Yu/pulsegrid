@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"pulsegrid/internal/domain"
@@ -8,11 +9,11 @@ import (
 
 func StatusForError(err error) int {
 	switch {
-	case err == domain.ErrNotFound:
+	case errors.Is(err, domain.ErrNotFound):
 		return http.StatusNotFound
-	case err == domain.ErrAlreadyExists || err == domain.ErrConflict || err == domain.ErrInvalidState:
+	case errors.Is(err, domain.ErrAlreadyExists) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrInvalidState):
 		return http.StatusConflict
-	case err == domain.ErrInvalidInput:
+	case errors.Is(err, domain.ErrInvalidInput):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

@@ -524,11 +524,7 @@ func (a *App) ListDeliveries(ctx context.Context, filter store.DeliveryFilter) (
 }
 
 func (a *App) GetDelivery(ctx context.Context, id string) (domain.Delivery, error) {
-	value, err := a.config.Repository.GetDelivery(ctx, id)
-	if err != nil {
-		return domain.Delivery{}, fmt.Errorf("get delivery %s: %w", id, err)
-	}
-	return value, nil
+	return a.config.Repository.GetDelivery(ctx, id)
 }
 
 func (a *App) RegisterDeliveryEvent(ctx context.Context, id string, status domain.MessageStatus) (domain.Delivery, error) {
