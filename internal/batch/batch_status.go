@@ -1,18 +1,5 @@
 package batch
 
-type runStats struct {
-	succeeded int
-	failed    int
-}
-
-func (s *runStats) record(success bool) {
-	if success {
-		s.succeeded++
-		return
-	}
-	s.failed++
-}
-
 func SuccessRate(value Report) float64 {
 	if value.Summary.Total == 0 {
 		return 0

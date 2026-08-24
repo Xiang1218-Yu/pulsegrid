@@ -71,35 +71,84 @@ func (p *Processor) Run(ctx context.Context, items []Item) Report {
 		report.Summary = summarize(report.Results, time.Since(started))
 		return report
 	}
+
 	tasks := make(chan indexedItem)
-	var group sync.WaitGroup
-	stats := &runStats{}
+	results := make(chan indexedItemResult)
+
+	// stopCh is closed once when processing should halt early (either because a
+	// handler failed in !Continue mode, or the context was cancelled). Closing a
+	// channel is idempotent only when guarded, so sync.Once makes it safe for
+	// several concurrent worker failures to signal stop without panicking.
+	var stopOnce sync.Once
+	stop := make(chan struct{})
+	signalStop := func() { stopOnce.Do(func() { close(stop) }) }
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		signalStop()
+	}
+
+	var workerGroup sync.WaitGroup
 	for worker := 0; worker < p.config.Workers; worker++ {
-		group.Add(1)
+		workerGroup.Add(1)
 		go func() {
-			defer group.Done()
+			defer workerGroup.Done()
 			for task := range tasks {
 				result := p.process(ctx, task.item)
-				report.Results[task.index] = result
-				stats.record(result.Success)
+				results <- indexedItemResult{index: task.index, result: result}
 				if !result.Success && !p.config.Continue {
+					signalStop()
 					return
 				}
 			}
 		}()
 	}
+
+	// The collector is the single writer of report.Results. Workers never touch
+	// the slice; they report back through the results channel. This removes the
+	// write race that existed when workers and the dispatch loop could both
+	// store into the same slot (the dispatch loop's ctx.Done path used to
+	// overwrite results that workers had already written).
+	collectorDone := make(chan struct{})
+	go func() {
+		for item := range results {
+			report.Results[item.index] = item.result
+		}
+		close(collectorDone)
+	}()
+
+	// Dispatch items until we run out, the context is cancelled, or a worker
+	// signals an early stop. Dispatching happens here (single producer), so
+	// there is no contention on the tasks channel.
+	dispatched := 0
 	for index, item := range items {
 		select {
+		case <-stop:
+			// Remaining items are handled after the pool drains; stop now.
+			goto drain
 		case <-ctx.Done():
-			report.Results[index] = failure(item, 0, ctx.Err())
+			signalStop()
+			goto drain
 		case tasks <- indexedItem{index: index, item: item}:
+			dispatched++
 		}
 	}
+drain:
 	close(tasks)
-	group.Wait()
+	workerGroup.Wait()
+	close(results)
+	<-collectorDone
+
+	// Fill any slots that were never dispatched. By this point the worker pool
+	// has fully drained and the collector has exited, so no other goroutine is
+	// touching report.Results — writing here is race-free.
+	for index := dispatched; index < len(items); index++ {
+		report.Results[index] = failure(items[index], 0, ctx.Err())
+	}
+
+	// summarize scans the now-fully-written slice, so the counts are always
+	// consistent with the stored results (Succeeded+Failed+Skipped == Total).
+	// The earlier stats counter only tallied processed items and could drift
+	// below the real number under contention, which made monitoring undercount.
 	report.Summary = summarize(report.Results, time.Since(started))
-	report.Summary.Succeeded = stats.succeeded
-	report.Summary.Failed = stats.failed
 	return report
 }
 
@@ -195,6 +244,15 @@ func RetryReport(ctx context.Context, report Report, handler Handler) Report {
 type indexedItem struct {
 	index int
 	item  Item
+}
+
+// indexedItemResult pairs a processed result with the original slice index so
+// the collector goroutine can store it at the right position. Keeping the index
+// out of Result (which has its own JSON shape) lets results travel back through
+// a channel without the workers ever writing to the shared slice directly.
+type indexedItemResult struct {
+	index  int
+	result Result
 }
 
 func failure(item Item, attempts int, err error) Result {
