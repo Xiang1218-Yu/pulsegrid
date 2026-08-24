@@ -642,7 +642,7 @@ func (a *App) HandleDelivery(ctx context.Context, job jobs.Job) error {
 
 func (a *App) Overview(ctx context.Context, options OverviewOptions) (domain.Overview, error) {
 	organizationFilter := store.OrganizationFilter{Limit: 100000}
-	if options.OrganizationID == "" {
+	if options.OrganizationID != "" {
 		organizationFilter.ID = options.OrganizationID
 	}
 	organizations, err := a.config.Repository.ListOrganizations(ctx, organizationFilter)
