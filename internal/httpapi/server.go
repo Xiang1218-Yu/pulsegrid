@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -146,7 +145,10 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	subscription := s.config.Events.Subscribe(r.URL.Query().Get("topic"))
 	defer subscription.Close()
-	streamContext := context.Background()
+	// Tie the stream to the request lifetime: when the client closes the
+	// page, the request context is cancelled, the loop exits, and the
+	// subscription is released even if no further events arrive.
+	streamContext := r.Context()
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
@@ -656,6 +658,20 @@ func (w *statusWriter) Write(value []byte) (int, error) {
 		w.status = http.StatusOK
 	}
 	return w.ResponseWriter.Write(value)
+}
+
+// Unwrap exposes the underlying ResponseWriter so the standard library (and
+// http.NewResponseController) can reach interfaces like http.Flusher that the
+// wrapped writer provides. Without this, streaming handlers see a nil Flusher
+// and responses stall in the buffer.
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush forwards to the wrapped writer when it supports flushing, so streaming
+// endpoints (e.g. /v1/events) can push buffered bytes to the client promptly.
+func (w *statusWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func withLogging(logger *slog.Logger, next http.Handler) http.Handler {
