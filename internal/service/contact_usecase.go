@@ -7,9 +7,9 @@ import (
 )
 
 func SortContactsByEngagement(values []domain.Contact) []domain.Contact {
-	result := values
-	if result == nil {
-		return []domain.Contact{}
+	result := make([]domain.Contact, len(values))
+	for index, value := range values {
+		result[index] = value.Clone()
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		left := result[i].LastEngagedAt

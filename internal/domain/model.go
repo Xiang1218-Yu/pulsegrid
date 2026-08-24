@@ -533,7 +533,7 @@ func (o Organization) Clone() Organization {
 }
 func (c Contact) Clone() Contact {
 	out := c
-	out.Tags = c.Tags
+	out.Tags = append([]string(nil), c.Tags...)
 	if out.Tags == nil {
 		out.Tags = []string{}
 	}

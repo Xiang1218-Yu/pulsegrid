@@ -248,12 +248,7 @@ func (m *Memory) ListContacts(ctx context.Context, filter ContactFilter) ([]doma
 		if search != "" && !strings.Contains(strings.ToLower(value.Email+" "+value.Name+" "+value.Company), search) {
 			continue
 		}
-		contact := value
-		contact.Tags = value.Tags
-		if contact.Tags == nil {
-			contact.Tags = []string{}
-		}
-		result = append(result, contact)
+		result = append(result, value.Clone())
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
 	return capSlice(result, filter.Limit), nil
