@@ -471,7 +471,11 @@ func (a *App) StartCampaign(ctx context.Context, id string) (domain.Campaign, er
 		}
 		if a.config.Jobs != nil {
 			if err := a.config.Jobs.Enqueue(ctx, jobs.Job{Type: "deliver-message", Payload: map[string]any{"delivery_id": delivery.ID}, MaxRetry: 2}); err != nil {
-				return domain.Campaign{}, fmt.Errorf("queue delivery %s: %v", delivery.ID, err)
+				// The campaign is already running and the delivery is persisted,
+				// so an enqueue failure is a transient backend outage rather than
+				// a bad request. Wrap (not %v) so the retryable sentinel reaches
+				// the caller, who may retry the start to re-enqueue remaining work.
+				return domain.Campaign{}, fmt.Errorf("queue delivery %s: %w", delivery.ID, err)
 			}
 		}
 	}

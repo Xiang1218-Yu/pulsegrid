@@ -613,7 +613,14 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	writeJSON(w, StatusForError(err), map[string]string{"error": err.Error()})
+	status := StatusForError(err)
+	retryable, retryAfter := RetryableError(err)
+	if retryable {
+		w.Header().Set("retry-after", strconv.Itoa(retryAfter))
+		writeJSON(w, status, map[string]any{"error": err.Error(), "retryable": true, "retry_after": retryAfter})
+		return
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
 
 func parseInt(value string, fallback int) int {

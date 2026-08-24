@@ -8,8 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"pulsegrid/internal/domain"
 )
 
 type Handler func(context.Context, Job) error
@@ -52,7 +50,22 @@ type Stats struct {
 	Failed   int64 `json:"failed"`
 }
 
-var ErrNotStarted = errors.New("queue is not started")
+var (
+	// ErrNotStarted is reported when Enqueue is called before Start.
+	ErrNotStarted = errors.New("queue is not started")
+	// ErrUnavailable indicates background processing is temporarily unable to
+	// accept work (the queue has not started, is shutting down, or is saturated).
+	// Callers should retry the request later; the queue and any persisted state
+	// remain consistent. It wraps the specific cause so callers can distinguish
+	// reasons via errors.Is/As while still treating the failure as retryable.
+	ErrUnavailable = errors.New("background processing temporarily unavailable")
+)
+
+// Retryable reports whether err represents a transient failure that the caller
+// may retry. It returns true for ErrUnavailable and any error that wraps it.
+func Retryable(err error) bool {
+	return errors.Is(err, ErrUnavailable)
+}
 
 func New(config Config) *Queue {
 	if config.Workers < 1 {
@@ -94,10 +107,10 @@ func (q *Queue) Stop() {
 
 func (q *Queue) Enqueue(ctx context.Context, job Job) error {
 	if !q.started.Load() {
-		return ErrNotStarted
+		return fmt.Errorf("%w: %w", ErrUnavailable, ErrNotStarted)
 	}
 	if q.closed.Load() {
-		return domain.ErrInvalidState
+		return fmt.Errorf("%w: queue is stopped", ErrUnavailable)
 	}
 	if job.ID == "" {
 		job.ID = fmt.Sprintf("job-%d", time.Now().UnixNano())
@@ -109,12 +122,12 @@ func (q *Queue) Enqueue(ctx context.Context, job Job) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-q.stop:
-		return domain.ErrInvalidState
+		return fmt.Errorf("%w: queue is stopped", ErrUnavailable)
 	case q.items <- job:
 		q.accepted.Add(1)
 		return nil
 	default:
-		return domain.ErrConflict
+		return fmt.Errorf("%w: queue capacity is full", ErrUnavailable)
 	}
 }
 
