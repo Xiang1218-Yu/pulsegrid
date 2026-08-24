@@ -541,10 +541,17 @@ func (a *App) RegisterDeliveryEvent(ctx context.Context, id string, status domai
 	}
 	campaign, err := a.config.Repository.GetCampaign(ctx, value.CampaignID)
 	if err == nil {
-		ApplyDeliveryProgress(&campaign, previous, value)
-		_ = a.config.Repository.UpdateCampaign(ctx, campaign)
-		a.recordMetric(campaign.OrganizationID, "delivery."+string(status), 1)
-		a.publish(ctx, events.NewEvent(campaign.OrganizationID, "delivery."+string(status), value.ID, value.ContactID, map[string]any{"campaign_id": campaign.ID}))
+		// Only record side effects when the delivery actually progressed.
+		// Duplicate identical callbacks (a provider resending the same
+		// webhook) are treated as no-ops so campaign counters, analytics
+		// metrics and downstream automation events stay consistent with the
+		// delivery's true status.
+		if domain.DeliveryEventShouldCount(previous, value) {
+			ApplyDeliveryProgress(&campaign, previous, value)
+			_ = a.config.Repository.UpdateCampaign(ctx, campaign)
+			a.recordMetric(campaign.OrganizationID, "delivery."+string(status), 1)
+			a.publish(ctx, events.NewEvent(campaign.OrganizationID, "delivery."+string(status), value.ID, value.ContactID, map[string]any{"campaign_id": campaign.ID}))
+		}
 	}
 	return value, nil
 }

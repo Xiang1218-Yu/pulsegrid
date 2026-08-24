@@ -23,9 +23,15 @@ func DeliveryStatusRank(value MessageStatus) int {
 	}
 }
 
+// DeliveryEventShouldCount reports whether a status update should advance a
+// campaign's aggregate counters. A callback only counts when the delivery
+// actually progresses to a new state: a duplicate of the current status
+// (e.g. a provider resending the same "delivered" webhook) is a no-op so
+// repeated callbacks cannot inflate SentCount / DeliveredCount and the
+// reports stay consistent with the real delivery status.
 func DeliveryEventShouldCount(before, after Delivery) bool {
 	if before.Status == after.Status {
-		return true
+		return false
 	}
 	return DeliveryStatusRank(after.Status) > DeliveryStatusRank(before.Status)
 }
