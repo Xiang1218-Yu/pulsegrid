@@ -39,6 +39,8 @@ type Daily struct {
 func New() *Store { return &Store{metrics: []domain.Metric{}} }
 
 func (s *Store) Record(metric domain.Metric) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if metric.RecordedAt.IsZero() {
 		metric.RecordedAt = time.Now().UTC()
 	}
