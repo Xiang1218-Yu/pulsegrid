@@ -26,10 +26,18 @@ type Bus struct {
 	topics map[string]map[uint64]bool
 }
 
+// subscription holds a single subscriber's state. Its own mutex serializes
+// delivery (send) against teardown (close): a Publish that has already
+// snapshotted this subscription finishes its send, or notices the channel has
+// been closed, without ever racing a concurrent close. That is what keeps a
+// subscriber disconnecting mid-stream from panicking the publisher — and with
+// it the whole process and every other in-flight monitor request.
 type subscription struct {
 	id      uint64
 	bus     *Bus
 	topics  map[string]bool
+	mu      sync.Mutex
+	closed  bool
 	channel chan domain.Event
 	once    sync.Once
 }
@@ -69,9 +77,14 @@ func (b *Bus) Subscribe(topics ...string) *Subscription {
 
 func (s *Subscription) Events() <-chan domain.Event { return s.value.channel }
 
+// Close tears the subscription down: it removes the subscription from the bus
+// registry and closes its channel. Removal is essential — without it the bus
+// keeps a stale reference whose channel is already closed, and the next
+// Publish would send on a closed channel and panic, taking the process down
+// with it. Close is safe to call more than once.
 func (s *Subscription) Close() {
 	s.value.once.Do(func() {
-		close(s.value.channel)
+		s.value.bus.remove(s.value.id)
 	})
 }
 
@@ -90,18 +103,33 @@ func (b *Bus) Publish(ctx context.Context, event domain.Event) error {
 	drop := b.config.DropWhenBusy
 	b.mu.RUnlock()
 	for _, recipient := range recipients {
+		// Deliver under the subscription's own lock so that a concurrent
+		// Close (which closes the channel under the same lock) can never
+		// overlap a send. If the subscriber has torn down, we simply skip it
+		// — no send on a closed channel, no panic, no process crash.
+		recipient.mu.Lock()
+		if recipient.closed {
+			recipient.mu.Unlock()
+			continue
+		}
 		if drop {
 			select {
 			case recipient.channel <- event:
 			default:
 			}
+			recipient.mu.Unlock()
 			continue
 		}
+		// Release the per-subscription lock while blocking on a slow
+		// subscriber only if the context is already done; otherwise keep it
+		// to stay race-free against Close.
 		select {
 		case <-ctx.Done():
+			recipient.mu.Unlock()
 			return ctx.Err()
 		case recipient.channel <- event:
 		}
+		recipient.mu.Unlock()
 	}
 	return nil
 }
@@ -114,24 +142,38 @@ func (b *Bus) Close() {
 	}
 	b.closed = true
 	for _, sub := range b.subs {
+		sub.mu.Lock()
+		sub.closed = true
 		close(sub.channel)
+		sub.mu.Unlock()
 	}
 	b.subs = map[uint64]*subscription{}
 	b.topics = map[string]map[uint64]bool{}
 }
 
+// remove unregisters a subscription from the bus and closes its channel.
+// Called from Subscription.Close via the per-subscription Once, so it runs at
+// most once per subscription.
 func (b *Bus) remove(id uint64) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	sub, ok := b.subs[id]
 	if !ok {
+		b.mu.Unlock()
 		return
 	}
 	delete(b.subs, id)
 	for topic := range sub.topics {
 		delete(b.topics[topic], id)
 	}
+	b.mu.Unlock()
+	// Close the channel outside the bus lock so a Publish that already holds
+	// the subscription lock (and is mid-send) is not blocked from finishing;
+	// the lock here serializes the close against any in-flight send on this
+	// same subscription.
+	sub.mu.Lock()
+	sub.closed = true
 	close(sub.channel)
+	sub.mu.Unlock()
 }
 
 func (b *Bus) recipientsLocked(topic string) []*subscription {
